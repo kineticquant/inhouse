@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "inhouse"
-version = "0.1.0"
+version = "0.1.1"
 description = "Zero-dependency, in-process TTL cache for Python. Optional FastAPI decorators, stampede-safe, LRU-bounded."
 readme = "README.md"
 license = "MIT"
