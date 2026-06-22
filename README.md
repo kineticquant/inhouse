@@ -62,7 +62,8 @@ Requires `pip install inhouse[fastapi]`.
 
 - TTL cache with lazy expiry on read
 - LRU eviction when `max_size` is exceeded
-- Per-key singleflight to prevent cache stampedes
+- Per-key singleflight stampede guard - concurrent misses on the same key coalesce to one computation. Errors and cancellations propagate to all waiters (no hung followers on shutdown)
+- Deterministic cache keys - canonical JSON serialization. Keyword argument order and Request subclasses don't cause spurious cache misses
 - Thread-safe store for sync and async callables
 - Fixed, store-default, or callable TTL on each cache write
 
@@ -70,6 +71,7 @@ Requires `pip install inhouse[fastapi]`.
 
 - `@fastapi_cache` with Request/Response-aware cache keys
 - Background expiry sweeper via FastAPI lifespan helpers
+- Clean lifespan shutdown - background sweeper cancels without noisy tracebacks
 
 ## Configuration reference
 
@@ -206,11 +208,13 @@ store = MemoryStore(default_ttl=60)
 async def load_config() -> dict[str, str]:
     ...
 
-# Later — affects future cache writes only
+# Later - affects future cache writes only
 store.default_ttl = 300
 ```
 
 Omitting `ttl_seconds` on the decorator uses `store.default_ttl`. If both are missing, inhouse raises `ValueError`.
+
+`store.default_ttl` is safe to change at runtime from other threads; new writes pick up the updated value atomically.
 
 ### 3. Callable TTL (evaluated on each write)
 
