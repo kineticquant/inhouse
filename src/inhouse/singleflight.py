@@ -8,7 +8,20 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
-# singleflight is separated into 2 classes: async and sync
+
+def _release_async_waiters(future: asyncio.Future[Any], exc: BaseException) -> None:
+    if future.done():
+        return
+    if isinstance(exc, asyncio.CancelledError):
+        future.cancel()
+    else:
+        future.set_exception(exc)
+
+
+def _release_sync_waiters(future: Future[Any], exc: BaseException) -> None:
+    if not future.done():
+        future.set_exception(exc)
+
 
 class AsyncSingleflight:
     """Coalesce concurrent async computations for the same cache key."""
@@ -34,9 +47,8 @@ class AsyncSingleflight:
 
         try:
             result = await compute()
-        except Exception as exc:
-            if not future.done():
-                future.set_exception(exc)
+        except BaseException as exc:
+            _release_async_waiters(future, exc)
             raise
         else:
             if not future.done():
@@ -70,8 +82,8 @@ class SyncSingleflight:
 
         try:
             result = compute()
-        except Exception as exc:
-            future.set_exception(exc)
+        except BaseException as exc:
+            _release_sync_waiters(future, exc)
             raise
         else:
             future.set_result(result)
