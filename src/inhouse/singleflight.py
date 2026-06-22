@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
+# singleflight is separated into 2 classes: async and sync
 
 class AsyncSingleflight:
     """Coalesce concurrent async computations for the same cache key."""

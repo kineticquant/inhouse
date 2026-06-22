@@ -9,12 +9,13 @@ from inhouse.keys import make_cache_key
 from inhouse.store import MemoryStore
 from inhouse.sweeper import ExpirySweeper
 
+# MUST have fastapi which uses starlette to work with RR tuple
 try:
     from starlette.requests import Request
     from starlette.responses import Response
 
     _FASTAPI_EXCLUDE_TYPES: tuple[type[Any], ...] = (Request, Response)
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency, technically
     _FASTAPI_EXCLUDE_TYPES = ()
 
 

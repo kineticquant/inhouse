@@ -1,4 +1,4 @@
-"""InHouse — zero-dependency, in-process TTL cache with LRU eviction."""
+"""inhouse — zero-dependency, in-process TTL cache with LRU eviction."""
 
 from inhouse.decorator import cache, configure_default_store, get_default_store, inhouse_cache
 from inhouse.entry import CacheEntry
