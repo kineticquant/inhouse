@@ -34,13 +34,15 @@ class MemoryStore:
 
     @property
     def default_ttl(self) -> float | None:
-        return self._default_ttl
+        with self._lock:
+            return self._default_ttl
 
     @default_ttl.setter
     def default_ttl(self, value: float | None) -> None:
         if value is not None and value <= 0:
             raise ValueError("default_ttl must be positive")
-        self._default_ttl = value
+        with self._lock:
+            self._default_ttl = value
 
     @property
     def size(self) -> int:
@@ -59,11 +61,11 @@ class MemoryStore:
             return entry.value
 
     def set(self, key: str, value: Any, ttl_seconds: float | None = None) -> None:
-        ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl
-        if ttl is None or ttl <= 0:
-            raise ValueError("ttl_seconds must be positive")
-        expires_at = time.monotonic() + ttl
         with self._lock:
+            ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl
+            if ttl is None or ttl <= 0:
+                raise ValueError("ttl_seconds must be positive")
+            expires_at = time.monotonic() + ttl
             self._entries[key] = CacheEntry(expires_at=expires_at, value=value)
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_size:
