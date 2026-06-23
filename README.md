@@ -6,14 +6,16 @@ Designed for easy use with FastAPI applications. Although FastAPI integration is
 
 ## Install
 
+The package is published on PyPI as **`inhouse-cache`**. Imports use `inhouse` (e.g. `from inhouse import MemoryStore`).
+
 Core:
 ```bash
-pip install inhouse
+pip install inhouse-cache
 ```
 
 With FastAPI helpers (`fastapi_cache`, lifespan sweeper):
 ```bash
-pip install inhouse[fastapi]
+pip install inhouse-cache[fastapi]
 ```
 
 ## Quick start Usage
@@ -54,7 +56,7 @@ async def get_item(item_id: int) -> dict[str, int]:
     return {"item_id": item_id}
 ```
 
-Requires `pip install inhouse[fastapi]`.
+Requires `pip install inhouse-cache[fastapi]`.
 
 ## Features
 
@@ -67,7 +69,7 @@ Requires `pip install inhouse[fastapi]`.
 - Thread-safe store for sync and async callables
 - Fixed, store-default, or callable TTL on each cache write
 
-**Optional FastAPI extra** (`pip install inhouse[fastapi]`)
+**Optional FastAPI extra** (`pip install inhouse-cache[fastapi]`)
 
 - `@fastapi_cache` with Request/Response-aware cache keys
 - Background expiry sweeper via FastAPI lifespan helpers
@@ -142,7 +144,7 @@ async def load_config() -> dict[str, str]:
     ...
 ```
 
-### `@fastapi_cache` *(optional — requires `inhouse[fastapi]`)*
+### `@fastapi_cache` *(optional — requires `inhouse-cache[fastapi]`)*
 
 FastAPI-friendly wrapper around `inhouse_cache`. Automatically excludes Starlette `Request` and `Response` objects from cache keys.
 
@@ -165,7 +167,7 @@ async def get_item(item_id: int) -> dict[str, int]:
 
 `fastapi_cache` does not expose `key_builder` or `exclude_types`; it always uses the FastAPI-aware key builder.
 
-### Lifespan / background cleanup *(optional — requires `inhouse[fastapi]`)*
+### Lifespan / background cleanup *(optional — requires `inhouse-cache[fastapi]`)*
 
 ```python
 from inhouse.fastapi import create_lifespan, inhouse_lifespan
