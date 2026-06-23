@@ -4,6 +4,9 @@
 
 Designed for easy use with FastAPI applications. Although FastAPI integration is absolutely optional.
 
+### Official Documentation/Release Notice:
+Complete documentation by version is now managed by Rancero, and is available at https://docs.rancero.com/docs/category/inhouse-cache.
+
 ## Install
 
 The package is published on PyPI as **`inhouse-cache`**. Imports use `inhouse` (e.g. `from inhouse import MemoryStore`).
