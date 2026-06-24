@@ -67,10 +67,11 @@ Requires `pip install inhouse-cache[fastapi]`.
 
 - TTL cache with lazy expiry on read
 - LRU eviction when `max_size` is exceeded
-- Per-key singleflight stampede guard - concurrent misses on the same key coalesce to one computation. Errors and cancellations propagate to all waiters (no hung followers on shutdown)
-- Deterministic cache keys - canonical JSON serialization. Keyword argument order and Request subclasses don't cause spurious cache misses
+- Per-key singleflight stampede guard - concurrent misses on the same key coalesce to one computation. Backend errors propagate to all waiters; client disconnect on the leader no longer aborts in-flight cache population for followers
+- Deterministic cache keys - canonical JSON serialization with type-qualified fallbacks for custom objects. Keyword argument order and Request subclasses don't cause spurious cache misses
 - Thread-safe store for sync and async callables
 - Fixed, store-default, or callable TTL on each cache write
+- Opt-in `copy_on_read` on `MemoryStore` — deep-copy cached values on read to prevent caller mutation from corrupting the cache
 
 **Optional FastAPI extra** (`pip install inhouse-cache[fastapi]`)
 
@@ -92,6 +93,7 @@ store = MemoryStore(max_size=1024, default_ttl=60)
 |---|---|---|---|
 | `max_size` | `int` | `1024` | Maximum number of entries before LRU eviction |
 | `default_ttl` | `float \| None` | `None` | Default TTL in seconds for `store.set()` and decorators that omit `ttl_seconds` |
+| `copy_on_read` | `bool` | `False` | When `True`, `get()` returns `copy.deepcopy()` of cached values so callers cannot mutate the store |
 | `default_ttl` (property) | `float \| None` | — | Mutable at runtime; affects **future** writes only |
 | `size` | `int` (read-only) | — | Current number of cached entries |
 
@@ -99,7 +101,7 @@ Store methods:
 
 | Method | Description |
 |---|---|
-| `get(key, *, default=MISS)` | Return a cached value, or `default` on miss/expiry |
+| `get(key, *, default=MISS)` | Return a cached value, or `default` on miss/expiry. Deep-copies when `copy_on_read=True` |
 | `set(key, value, ttl_seconds=None)` | Write a value; uses `default_ttl` when `ttl_seconds` is omitted |
 | `delete(key)` | Remove one entry |
 | `clear()` | Remove all entries |
@@ -129,7 +131,7 @@ async def load_user(user_id: int) -> dict[str, int]:
 |---|---|---|---|
 | `ttl_seconds` | `float \| Callable[[], float] \| None` | `None` | TTL in seconds for each cache write. See [Dynamic TTL](#dynamic-ttl). |
 | `store` | `MemoryStore \| None` | module default | Cache instance to read/write |
-| `key_builder` | `Callable[..., str]` | `make_cache_key` | Builds the cache key from function identity + arguments |
+| `key_builder` | `Callable[..., str]` | `make_cache_key` | Builds the cache key from function identity + arguments. Non-JSON-serializable arguments fall back to `module.qualname:str(value)` |
 | `exclude_types` | `tuple[type, ...]` | `()` | Argument types excluded from key material (e.g. request objects) |
 
 `inhouse_cache` is an alias for `cache`.
@@ -167,8 +169,9 @@ async def get_item(item_id: int) -> dict[str, int]:
 |---|---|---|---|
 | `ttl_seconds` | `float \| Callable[[], float] \| None` | `None` | Same semantics as `@inhouse_cache` |
 | `store` | `MemoryStore \| None` | module default | Cache instance to read/write |
+| `key_builder` | `Callable[..., str] \| None` | `make_fastapi_cache_key` | Custom key builder. Defaults exclude Starlette `Request`/`Response`; override delegates that responsibility to you |
 
-`fastapi_cache` does not expose `key_builder` or `exclude_types`; it always uses the FastAPI-aware key builder.
+Custom `key_builder` functions replace the FastAPI-aware default. To keep Request/Response exclusion, delegate to `make_fastapi_cache_key` or pass your own `exclude_types`.
 
 ### Lifespan / background cleanup *(optional — requires `inhouse-cache[fastapi]`)*
 
@@ -261,22 +264,24 @@ inhouse is **per-process** memory. If you run `uvicorn main:app --workers 4`, ea
 
 ```mermaid
 flowchart TB
-    subgraph fastapi_layer [Optional FastAPI Layer]
-        Decorator["@fastapi_cache"]
-        Lifespan["lifespan: start/stop sweeper"]
+    subgraph fastapi_layer [Optional FastAPI Integration - inhouse.fastapi]
+        FDecorator["fastapi/decorator.py: @fastapi_cache"]
+        FLifespan["fastapi/lifespan.py: create_lifespan"]
+        FKeys["fastapi/keys.py: make_fastapi_cache_key"]
     end
 
     subgraph core [Zero-Dependency Core]
-        KeyBuilder["make_cache_key()"]
-        Store["MemoryStore"]
-        Singleflight["PerKeySingleflight"]
-        Sweeper["ExpirySweeper"]
+        KeyBuilder["inhouse/keys.py: make_cache_key()"]
+        Store["inhouse/store.py: MemoryStore"]
+        Singleflight["inhouse/singleflight.py"]
+        Sweeper["inhouse/sweeper.py: ExpirySweeper"]
     end
 
-    Decorator --> KeyBuilder
-    Decorator --> Store
-    Decorator --> Singleflight
-    Lifespan --> Sweeper
+    FDecorator --> FKeys
+    FKeys --> KeyBuilder
+    FDecorator --> Store
+    FDecorator --> Singleflight
+    FLifespan --> Sweeper
     Sweeper --> Store
     Store -->|"OrderedDict + TTL entries"| Memory[(In-Process Memory)]
 ```
