@@ -22,7 +22,7 @@ Imports use `inhouse`:
 from inhouse import MemoryStore, inhouse_cache
 ```
 
-### Highlights
+### Key Release Highlights
 
 - **FastAPI integration package** — `inhouse.fastapi` is now a package (`keys`, `decorator`, `lifespan` submodules) establishing the `inhouse/<integration>/` pattern for future backends. Public imports are unchanged; core `keys` and `decorator` stay in `inhouse/`.
 - **`MemoryStore(copy_on_read=True)`** — opt-in deep copy on `get()` so callers cannot mutate cached dicts/lists and corrupt state for other requests.
