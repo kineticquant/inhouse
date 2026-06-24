@@ -45,18 +45,24 @@ class AsyncSingleflight:
             result: T = await future
             return result
 
+        async def run() -> T:
+            try:
+                result = await compute()
+            except BaseException as exc:
+                _release_async_waiters(future, exc)
+                raise
+            else:
+                if not future.done():
+                    future.set_result(result)
+                return result
+            finally:
+                async with self._guard:
+                    self._inflight.pop(key, None)
+
         try:
-            result = await compute()
-        except BaseException as exc:
-            _release_async_waiters(future, exc)
+            return await asyncio.shield(run())
+        except asyncio.CancelledError:
             raise
-        else:
-            if not future.done():
-                future.set_result(result)
-            return result
-        finally:
-            async with self._guard:
-                self._inflight.pop(key, None)
 
 
 class SyncSingleflight:
