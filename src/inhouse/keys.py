@@ -34,14 +34,20 @@ def _collect_key_material(
     }
 
 
-def make_cache_key(
-    func: Callable[..., Any],
-    args: Sequence[Any],
-    kwargs: Mapping[str, Any],
-    *,
-    exclude_types: tuple[type[Any], ...] = (),
-) -> str:
-    """Build a deterministic cache key from function identity and call arguments."""
+# stable sha-256 hex digest for a cached response value (canonical json)
+def stable_value_digest(value: Any) -> str:
+    normalized = _normalize_value(value)
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# weak http etag header value for a cached response body
+def make_weak_etag(value: Any) -> str:
+    return f'W/"{stable_value_digest(value)}"'
+
+
+# deterministic cache key from function identity and call arguments
+def make_cache_key(func: Callable[..., Any], args: Sequence[Any], kwargs: Mapping[str, Any], *, exclude_types: tuple[type[Any], ...] = ()) -> str:  # noqa: E501
     material = _collect_key_material(args, kwargs, exclude_types)
     payload = json.dumps(material, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
