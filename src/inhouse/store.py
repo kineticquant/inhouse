@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from collections import OrderedDict
@@ -18,11 +19,12 @@ MISS = _CacheMiss()
 class MemoryStore:
     """Thread-safe in-memory cache with TTL expiry and LRU eviction."""
 
-    def __init__(self, max_size: int = 1024, *, default_ttl: float | None = None) -> None:
+    def __init__(self, max_size: int = 1024, *, default_ttl: float | None = None, copy_on_read: bool = False) -> None:  # noqa: E501
         if max_size < 1:
             raise ValueError("max_size must be at least 1")
         self._max_size = max_size
         self._default_ttl = default_ttl
+        self._copy_on_read = copy_on_read
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = threading.RLock()
         if default_ttl is not None and default_ttl <= 0:
@@ -58,7 +60,10 @@ class MemoryStore:
                 del self._entries[key]
                 return default
             self._entries.move_to_end(key)
-            return entry.value
+            value = entry.value
+            if self._copy_on_read:
+                return copy.deepcopy(value)
+            return value
 
     def set(self, key: str, value: Any, ttl_seconds: float | None = None) -> None:
         with self._lock:
