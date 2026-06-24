@@ -87,3 +87,21 @@ def test_purge_expired() -> None:
 
     assert removed == 2
     assert cache.size == 0
+
+
+def test_mutation_affects_cache_by_default() -> None:
+    cache = MemoryStore()
+    cache.set("key", {"count": 1}, 60)
+    value = cache.get("key")
+    assert isinstance(value, dict)
+    value["count"] = 2
+    assert cache.get("key") == {"count": 2}
+
+
+def test_copy_on_read_prevents_mutation() -> None:
+    cache = MemoryStore(copy_on_read=True)
+    cache.set("key", {"count": 1}, 60)
+    value = cache.get("key")
+    assert isinstance(value, dict)
+    value["count"] = 2
+    assert cache.get("key") == {"count": 1}

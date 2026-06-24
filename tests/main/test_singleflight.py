@@ -37,13 +37,15 @@ async def test_async_singleflight_exception_propagates_to_followers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_singleflight_cancellation_propagates_to_followers() -> None:
+async def test_async_singleflight_leader_cancel_followers_still_succeed() -> None:
     singleflight = AsyncSingleflight()
     started = asyncio.Event()
+    release = asyncio.Event()
 
     async def compute() -> str:
         started.set()
-        await asyncio.Event().wait()
+        await release.wait()
+        return "ok"
 
     async def invoke() -> str:
         return await singleflight.do("key", compute)
@@ -57,9 +59,9 @@ async def test_async_singleflight_cancellation_propagates_to_followers() -> None
 
     with pytest.raises(asyncio.CancelledError):
         await leader
-    with pytest.raises(asyncio.CancelledError):
-        await follower
 
+    release.set()
+    assert await follower == "ok"
     assert singleflight._inflight == {}
 
 

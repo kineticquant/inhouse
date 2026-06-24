@@ -65,3 +65,30 @@ def test_excluded_type_subclasses_are_ignored() -> None:
 def test_key_contains_function_identity() -> None:
     key = make_cache_key(sample_func, (1,), {})
     assert key.startswith(f"{sample_func.__module__}.{sample_func.__qualname__}:")
+
+
+def test_different_types_with_same_str_produce_different_keys() -> None:
+    class Alpha:
+        def __str__(self) -> str:
+            return "same"
+
+    class Beta:
+        def __str__(self) -> str:
+            return "same"
+
+    key_a = make_cache_key(sample_func, (Alpha(),), {})
+    key_b = make_cache_key(sample_func, (Beta(),), {})
+    assert key_a != key_b
+
+
+def test_same_type_and_str_produce_same_key() -> None:
+    class Widget:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def __str__(self) -> str:
+            return self.label
+
+    key_a = make_cache_key(sample_func, (Widget("x"),), {})
+    key_b = make_cache_key(sample_func, (Widget("x"),), {})
+    assert key_a == key_b
