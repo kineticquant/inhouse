@@ -16,7 +16,7 @@ def _normalize_value(value: Any) -> Any:
         return [_normalize_value(item) for item in value]
     if isinstance(value, str | int | float | bool) or value is None:
         return value
-    return str(value)
+    return f"{type(value).__module__}.{type(value).__qualname__}:{value!s}"
 
 
 def _collect_key_material(
