@@ -5,6 +5,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any, TypeVar
 
+from inhouse.http_cache import etag_for_value
 from inhouse.keys import make_cache_key
 from inhouse.singleflight import AsyncSingleflight, SyncSingleflight
 from inhouse.store import MISS, MemoryStore
@@ -43,7 +44,7 @@ def _resolve_ttl(target_store: MemoryStore, ttl_seconds: TtlSource) -> float:
 
 
 # cache decorator for sync and async callables
-def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, key_builder: Callable[..., str] = make_cache_key, exclude_types: tuple[type[Any], ...] = (), sliding: bool = False) -> Callable[[F], F]:  # noqa: E501
+def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, key_builder: Callable[..., str] = make_cache_key, exclude_types: tuple[type[Any], ...] = (), sliding: bool = False, etag: bool = False) -> Callable[[F], F]:  # noqa: E501
 
     def decorator(func: F) -> F:
         if inspect.iscoroutinefunction(func):
@@ -51,12 +52,7 @@ def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, ke
             @wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 target_store = store or _DEFAULT_STORE
-                cache_key = key_builder(
-                    func,
-                    args,
-                    kwargs,
-                    exclude_types=exclude_types,
-                )
+                cache_key = key_builder(func, args, kwargs, exclude_types=exclude_types)
 
                 cached = target_store.get(cache_key)
                 if cached is not MISS:
@@ -67,8 +63,7 @@ def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, ke
                     if recheck is not MISS:
                         return recheck
                     result = await func(*args, **kwargs)
-                    ttl = _resolve_ttl(target_store, ttl_seconds)
-                    target_store.set(cache_key, result, ttl, sliding=sliding)
+                    target_store.set(cache_key, result, _resolve_ttl(target_store, ttl_seconds), sliding=sliding, etag=etag_for_value(result, enabled=etag))  # noqa: E501
                     return result
 
                 return await _ASYNC_SINGLEFLIGHT.do(cache_key, compute)
@@ -78,12 +73,7 @@ def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, ke
         @wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             target_store = store or _DEFAULT_STORE
-            cache_key = key_builder(
-                func,
-                args,
-                kwargs,
-                exclude_types=exclude_types,
-            )
+            cache_key = key_builder(func, args, kwargs, exclude_types=exclude_types)
 
             cached = target_store.get(cache_key)
             if cached is not MISS:
@@ -94,8 +84,7 @@ def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, ke
                 if recheck is not MISS:
                     return recheck
                 result = func(*args, **kwargs)
-                ttl = _resolve_ttl(target_store, ttl_seconds)
-                target_store.set(cache_key, result, ttl, sliding=sliding)
+                target_store.set(cache_key, result, _resolve_ttl(target_store, ttl_seconds), sliding=sliding, etag=etag_for_value(result, enabled=etag))  # noqa: E501
                 return result
 
             return _SYNC_SINGLEFLIGHT.do(cache_key, compute)
