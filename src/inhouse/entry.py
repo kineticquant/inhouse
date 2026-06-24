@@ -8,3 +8,6 @@ from typing import Any
 class CacheEntry:
     expires_at: float
     value: Any
+    ttl_seconds: float
+    sliding: bool = False
+    etag: str | None = None

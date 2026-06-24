@@ -19,12 +19,13 @@ MISS = _CacheMiss()
 class MemoryStore:
     """Thread-safe in-memory cache with TTL expiry and LRU eviction."""
 
-    def __init__(self, max_size: int = 1024, *, default_ttl: float | None = None, copy_on_read: bool = False) -> None:  # noqa: E501
+    def __init__(self, max_size: int = 1024, *, default_ttl: float | None = None, copy_on_read: bool = False, sliding: bool = False) -> None:  # noqa: E501
         if max_size < 1:
             raise ValueError("max_size must be at least 1")
         self._max_size = max_size
         self._default_ttl = default_ttl
         self._copy_on_read = copy_on_read
+        self._sliding = sliding
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = threading.RLock()
         if default_ttl is not None and default_ttl <= 0:
@@ -47,6 +48,11 @@ class MemoryStore:
             self._default_ttl = value
 
     @property
+    def sliding(self) -> bool:
+        with self._lock:
+            return self._sliding
+
+    @property
     def size(self) -> int:
         with self._lock:
             return len(self._entries)
@@ -56,25 +62,48 @@ class MemoryStore:
             entry = self._entries.get(key)
             if entry is None:
                 return default
-            if time.monotonic() >= entry.expires_at:
+            now = time.monotonic()
+            if now >= entry.expires_at:
                 del self._entries[key]
                 return default
+            if entry.sliding:
+                entry.expires_at = now + entry.ttl_seconds
             self._entries.move_to_end(key)
             value = entry.value
             if self._copy_on_read:
                 return copy.deepcopy(value)
             return value
 
-    def set(self, key: str, value: Any, ttl_seconds: float | None = None) -> None:
+    def set(self, key: str, value: Any, ttl_seconds: float | None = None, *, sliding: bool | None = None, etag: str | None = None) -> None:  # noqa: E501
         with self._lock:
             ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl
             if ttl is None or ttl <= 0:
                 raise ValueError("ttl_seconds must be positive")
+            use_sliding = self._sliding if sliding is None else sliding
             expires_at = time.monotonic() + ttl
-            self._entries[key] = CacheEntry(expires_at=expires_at, value=value)
+            self._entries[key] = CacheEntry(expires_at=expires_at, value=value, ttl_seconds=ttl, sliding=use_sliding, etag=etag)  # noqa: E501
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_size:
                 self._entries.popitem(last=False)
+
+    # (remaining_ttl, etag) for a live entry, or none if missing/expired
+    def entry_meta(self, key: str) -> tuple[float, str | None] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            now = time.monotonic()
+            if now >= entry.expires_at:
+                return None
+            return max(0.0, entry.expires_at - now), entry.etag
+
+    def remaining_ttl(self, key: str) -> float | None:
+        meta = self.entry_meta(key)
+        return meta[0] if meta is not None else None
+
+    def get_etag(self, key: str) -> str | None:
+        meta = self.entry_meta(key)
+        return meta[1] if meta is not None else None
 
     def delete(self, key: str) -> bool:
         with self._lock:
@@ -87,14 +116,12 @@ class MemoryStore:
         with self._lock:
             self._entries.clear()
 
+    # remove expired entries; returns count removed
     def purge_expired(self) -> int:
-        """Remove all expired entries. Returns count of removed keys."""
         now = time.monotonic()
         removed = 0
         with self._lock:
-            expired_keys = [
-                key for key, entry in self._entries.items() if now >= entry.expires_at
-            ]
+            expired_keys = [key for key, entry in self._entries.items() if now >= entry.expires_at]
             for key in expired_keys:
                 del self._entries[key]
                 removed += 1

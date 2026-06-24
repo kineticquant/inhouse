@@ -105,3 +105,41 @@ def test_copy_on_read_prevents_mutation() -> None:
     assert isinstance(value, dict)
     value["count"] = 2
     assert cache.get("key") == {"count": 1}
+
+
+def test_sliding_extends_expiry_on_read() -> None:
+    cache = MemoryStore()
+    base = 1000.0
+    clock = {"now": base}
+
+    with patch("inhouse.store.time.monotonic", lambda: clock["now"]):
+        cache.set("key", "value", 60, sliding=True)
+        clock["now"] = base + 50
+        assert cache.get("key") == "value"
+        clock["now"] = base + 150
+        assert cache.get("key") is MISS
+
+
+def test_store_sliding_default_applies_on_set() -> None:
+    cache = MemoryStore(sliding=True)
+    assert cache.sliding is True
+    base = 1000.0
+    clock = {"now": base}
+
+    with patch("inhouse.store.time.monotonic", lambda: clock["now"]):
+        cache.set("key", "value", 60)
+        clock["now"] = base + 50
+        assert cache.get("key") == "value"
+        clock["now"] = base + 100
+        assert cache.get("key") == "value"
+
+
+def test_entry_meta_reports_remaining_ttl_and_etag() -> None:
+    cache = MemoryStore()
+    with patch("inhouse.store.time.monotonic", side_effect=[1000.0, 1010.0]):
+        cache.set("key", "value", 60, etag='W/"abc"')
+        meta = cache.entry_meta("key")
+
+    assert meta is not None
+    assert abs(meta[0] - 50.0) < 0.01
+    assert meta[1] == 'W/"abc"'
