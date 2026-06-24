@@ -42,14 +42,8 @@ def _resolve_ttl(target_store: MemoryStore, ttl_seconds: TtlSource) -> float:
     return resolved
 
 
-def cache(
-    ttl_seconds: TtlSource = None,
-    *,
-    store: MemoryStore | None = None,
-    key_builder: Callable[..., str] = make_cache_key,
-    exclude_types: tuple[type[Any], ...] = (),
-) -> Callable[[F], F]:
-    """Cache decorator for sync and async callables."""
+# cache decorator for sync and async callables
+def cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, key_builder: Callable[..., str] = make_cache_key, exclude_types: tuple[type[Any], ...] = (), sliding: bool = False) -> Callable[[F], F]:  # noqa: E501
 
     def decorator(func: F) -> F:
         if inspect.iscoroutinefunction(func):
@@ -73,7 +67,8 @@ def cache(
                     if recheck is not MISS:
                         return recheck
                     result = await func(*args, **kwargs)
-                    target_store.set(cache_key, result, _resolve_ttl(target_store, ttl_seconds))
+                    ttl = _resolve_ttl(target_store, ttl_seconds)
+                    target_store.set(cache_key, result, ttl, sliding=sliding)
                     return result
 
                 return await _ASYNC_SINGLEFLIGHT.do(cache_key, compute)
@@ -99,7 +94,8 @@ def cache(
                 if recheck is not MISS:
                     return recheck
                 result = func(*args, **kwargs)
-                target_store.set(cache_key, result, _resolve_ttl(target_store, ttl_seconds))
+                ttl = _resolve_ttl(target_store, ttl_seconds)
+                target_store.set(cache_key, result, ttl, sliding=sliding)
                 return result
 
             return _SYNC_SINGLEFLIGHT.do(cache_key, compute)

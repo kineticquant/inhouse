@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 from inhouse.decorator import cache
 from inhouse.store import MemoryStore
@@ -33,3 +34,24 @@ def test_sync_decorator_respects_ttl() -> None:
     assert compute() == 1
     time.sleep(0.06)
     assert compute() == 2
+
+
+def test_sync_decorator_sliding_extends_active_entry() -> None:
+    store = MemoryStore()
+    calls = {"count": 0}
+    base = 1000.0
+    clock = {"now": base}
+
+    @cache(60, store=store, sliding=True)
+    def load() -> str:
+        calls["count"] += 1
+        return "value"
+
+    with patch("inhouse.store.time.monotonic", lambda: clock["now"]):
+        assert load() == "value"
+        clock["now"] = base + 50
+        assert load() == "value"
+        assert calls["count"] == 1
+        clock["now"] = base + 111
+        assert load() == "value"
+        assert calls["count"] == 2
