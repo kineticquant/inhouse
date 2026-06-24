@@ -38,7 +38,12 @@ def http_cache_headers(*, remaining_ttl: float | None, http_cache: bool, cache_v
 
 def http_cache_outcome(body: Any, *, if_none_match: str | None, remaining_ttl: float | None, stored_etag: str | None, http_cache: bool, cache_visibility: Literal["private", "public"], use_etag: bool) -> HttpCacheOutcome:  # noqa: E501
     def headers(etag: str | None) -> dict[str, str]:
-        return http_cache_headers(remaining_ttl=remaining_ttl, http_cache=http_cache, cache_visibility=cache_visibility, etag=etag)
+        return http_cache_headers(
+            remaining_ttl=remaining_ttl,
+            http_cache=http_cache,
+            cache_visibility=cache_visibility,
+            etag=etag,
+        )
 
     if use_etag and etag_matches(if_none_match, stored_etag):
         return HttpCacheOutcome(304, headers(stored_etag), None)
