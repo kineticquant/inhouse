@@ -4,7 +4,7 @@ import inspect
 import math
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi.encoders import jsonable_encoder
 from starlette.requests import Request
@@ -34,7 +34,7 @@ def _ensure_request_in_signature(wrapper: Callable[..., Any], func: Callable[...
         *sig.parameters.values(),
         inspect.Parameter("request", inspect.Parameter.KEYWORD_ONLY, annotation=Request),
     ]
-    wrapper.__signature__ = inspect.Signature(parameters=params)
+    cast(Any, wrapper).__signature__ = inspect.Signature(parameters=params)
 
 
 # drop injected request kwarg before calling the route handler (unless handler declared it)
@@ -68,10 +68,9 @@ def _http_response(body: Any, *, status_code: int, http_cache: bool, cache_visib
 def _respond(body: Any, *, cache_key: str, target_store: MemoryStore, if_none_match: str | None, http_cache: bool, cache_visibility: Literal["private", "public"], use_etag: bool) -> Response:  # noqa: E501
     meta = target_store.entry_meta(cache_key)
     remaining, stored_etag = meta if meta is not None else (None, None)
-    common = {"http_cache": http_cache, "cache_visibility": cache_visibility, "remaining_ttl": remaining}  # noqa: E501
     if use_etag and _etag_matches(if_none_match, stored_etag):
-        return _http_response(None, status_code=304, etag=stored_etag, **common)
-    return _http_response(body, status_code=200, etag=stored_etag if use_etag else None, **common)
+        return _http_response(None, status_code=304, http_cache=http_cache, cache_visibility=cache_visibility, remaining_ttl=remaining, etag=stored_etag)  # noqa: E501
+    return _http_response(body, status_code=200, http_cache=http_cache, cache_visibility=cache_visibility, remaining_ttl=remaining, etag=stored_etag if use_etag else None)  # noqa: E501
 
 
 # write-through to memory store with resolved ttl, sliding flag, and optional etag
@@ -89,7 +88,8 @@ def _async_http_cache(func: Callable[..., Any], *, ttl_seconds: TtlSource, store
         cache_key = key_builder(func, args, kwargs, exclude_types=())
         request = kwargs.get("request")
         if_none_match = request.headers.get("if-none-match") if request else None
-        respond = lambda body: _respond(body, cache_key=cache_key, target_store=target_store, if_none_match=if_none_match, http_cache=http_cache, cache_visibility=cache_visibility, use_etag=etag)  # noqa: E731, E501
+        def respond(body: Any) -> Response:
+            return _respond(body, cache_key=cache_key, target_store=target_store, if_none_match=if_none_match, http_cache=http_cache, cache_visibility=cache_visibility, use_etag=etag)  # noqa: E501
 
         cached = target_store.get(cache_key)
         if cached is not MISS:
@@ -117,7 +117,8 @@ def _sync_http_cache(func: Callable[..., Any], *, ttl_seconds: TtlSource, store:
         cache_key = key_builder(func, args, kwargs, exclude_types=())
         request = kwargs.get("request")
         if_none_match = request.headers.get("if-none-match") if request else None
-        respond = lambda body: _respond(body, cache_key=cache_key, target_store=target_store, if_none_match=if_none_match, http_cache=http_cache, cache_visibility=cache_visibility, use_etag=etag)  # noqa: E731, E501
+        def respond(body: Any) -> Response:
+            return _respond(body, cache_key=cache_key, target_store=target_store, if_none_match=if_none_match, http_cache=http_cache, cache_visibility=cache_visibility, use_etag=etag)  # noqa: E501
 
         cached = target_store.get(cache_key)
         if cached is not MISS:
@@ -143,19 +144,10 @@ def fastapi_cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = 
         return inhouse_cache(ttl_seconds, store=store, key_builder=key_builder or make_fastapi_cache_key, sliding=sliding)  # noqa: E501
 
     resolved_key_builder = key_builder or make_fastapi_cache_key
-    http_opts = {
-        "ttl_seconds": ttl_seconds,
-        "store": store,
-        "key_builder": resolved_key_builder,
-        "sliding": sliding,
-        "http_cache": http_cache,
-        "cache_visibility": cache_visibility,
-        "etag": etag,
-    }
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         if inspect.iscoroutinefunction(func):
-            return _async_http_cache(func, **http_opts)
-        return _sync_http_cache(func, **http_opts)
+            return _async_http_cache(func, ttl_seconds=ttl_seconds, store=store, key_builder=resolved_key_builder, sliding=sliding, http_cache=http_cache, cache_visibility=cache_visibility, etag=etag)  # noqa: E501
+        return _sync_http_cache(func, ttl_seconds=ttl_seconds, store=store, key_builder=resolved_key_builder, sliding=sliding, http_cache=http_cache, cache_visibility=cache_visibility, etag=etag)  # noqa: E501
 
     return decorator
