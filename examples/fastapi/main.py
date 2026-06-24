@@ -18,6 +18,22 @@ async def get_item(item_id: int) -> dict[str, int | str]:
     return {"item_id": item_id, "source": "database"}
 
 
+# http_cache + etag: browser/CDN may skip the server entirely; repeat clients with
+# matching ETag get 304 Not Modified with zero payload.
+@app.get("/catalog/{item_id}")
+@fastapi_cache(
+    60,
+    store=store,
+    sliding=True,
+    http_cache=True,
+    etag=True,
+    cache_visibility="public",
+)
+async def get_catalog_item(item_id: int) -> dict[str, int | str]:
+    await asyncio.sleep(0.1)
+    return {"item_id": item_id, "source": "database"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
