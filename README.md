@@ -2,7 +2,7 @@
 
 **Zero-dependency, in-process TTL cache for Python.** One decorator, stampede-safe, LRU-bounded. For when Redis is a meeting you don't want to have, or when you need to avoid yet another deployment. Designed to be simple and effective without bloat or complexity for developers.
 
-**Keep hot data cheap to serve** — v0.2.0 goes one layer deeper (memory → HTTP) with sensible defaults and no breaking changes.
+**Keep hot data cheap to serve** — v0.2.x adds an optional HTTP layer (memory → `Cache-Control` / ETag) with sensible defaults and no breaking changes.
 
 Designed for easy use with FastAPI applications. Although FastAPI integration is absolutely optional.
 
@@ -36,6 +36,34 @@ store = MemoryStore(max_size=1024, default_ttl=60)
 @inhouse_cache(store=store)
 async def load_user(user_id: int) -> dict[str, int]:
     return {"user_id": user_id}
+```
+
+### Core with HTTP cache metadata (v0.2.1)
+
+```python
+from inhouse import MemoryStore, http_cache_outcome, inhouse_cache, make_cache_key
+
+store = MemoryStore(max_size=1024, default_ttl=60)
+
+
+@inhouse_cache(60, store=store, etag=True)
+async def load_catalog(item_id: int) -> dict[str, int]:
+    return {"item_id": item_id}
+
+
+# framework-agnostic conditional response (Flask, Django, raw ASGI, etc.)
+body = await load_catalog(1)
+cache_key = make_cache_key(load_catalog, (1,), {})
+outcome = http_cache_outcome(
+    body,
+    if_none_match=client_if_none_match,  # from request headers
+    remaining_ttl=store.remaining_ttl(cache_key),
+    stored_etag=store.get_etag(cache_key),
+    http_cache=True,
+    cache_visibility="public",
+    use_etag=True,
+)
+# outcome.status_code, outcome.headers, outcome.body → wire into your framework
 ```
 
 Works with both `async def` and `def` callables.
@@ -93,12 +121,13 @@ async def get_catalog_item(item_id: int) -> dict[str, int]:
 - Fixed, store-default, or callable TTL on each cache write
 - Opt-in `copy_on_read` on `MemoryStore` — deep-copy cached values on read to prevent caller mutation from corrupting the cache
 - **`remaining_ttl()` (v0.2.0)** — introspect seconds-until-expiry for a cached key
+- **HTTP cache primitives (v0.2.1)** — framework-agnostic helpers in `inhouse.http_cache`: weak ETag generation (`make_weak_etag`), `etag_matches`, `cache_control_header`, `http_cache_headers`, and `http_cache_outcome` (304 vs 200 decision + header dict)
+- **`@inhouse_cache(etag=True)` (v0.2.1)** — store a stable weak ETag alongside cached values at write time (no HTTP response objects; wire headers yourself or use a framework extra)
 
 **Optional FastAPI extra** (`pip install inhouse-cache[fastapi]`)
 
 - `@fastapi_cache` with Request/Response-aware cache keys
-- **HTTP Cache-Control (v0.2.0)** — opt-in `http_cache=True` emits `Cache-Control` with `max-age` derived from remaining in-process TTL. Offloads execution load entirely: if a client browser or a CDN (like Cloudflare) sees a valid header, they won't even send the request to your FastAPI server — saving bandwidth and compute
-- **ETag / 304 Not Modified (v0.2.0)** — opt-in `etag=True` handles `If-None-Match` and returns `304` with an empty body when content is unchanged — a huge bandwidth win on repeat traffic
+- **Automatic HTTP wiring (v0.2.0, core-backed v0.2.1)** — `http_cache=True` and/or `etag=True` read `If-None-Match` from the injected `Request` and return native Starlette `JSONResponse` / `304 Response` using core `http_cache_outcome`
 - Background expiry sweeper via FastAPI lifespan helpers
 - Clean lifespan shutdown - background sweeper cancels without noisy tracebacks
 
@@ -151,6 +180,7 @@ store = MemoryStore(default_ttl=60)
     key_builder=make_cache_key,  # optional — custom cache key strategy
     exclude_types=(object,),     # optional — types omitted from key material
     sliding=False,           # optional — touch-on-read TTL extension
+    etag=False,              # optional — store weak ETag metadata at write time
 )
 async def load_user(user_id: int) -> dict[str, int]:
     return {"user_id": user_id}
@@ -163,8 +193,43 @@ async def load_user(user_id: int) -> dict[str, int]:
 | `key_builder` | `Callable[..., str]` | `make_cache_key` | Builds the cache key from function identity + arguments. Non-JSON-serializable arguments fall back to `module.qualname:str(value)` |
 | `exclude_types` | `tuple[type, ...]` | `()` | Argument types excluded from key material (e.g. request objects) |
 | `sliding` | `bool` | `False` | When `True`, each successful read extends expiry by the entry's stored TTL duration |
+| `etag` | `bool` | `False` | When `True`, store a weak ETag (`W/"<sha256>"`) at write time via `make_weak_etag`. Retrieve with `store.get_etag(key)` or `store.entry_meta(key)` |
 
 `inhouse_cache` is an alias for `cache`.
+
+### HTTP cache primitives *(core — zero dependencies, v0.2.1)*
+
+Core owns HTTP **semantics** (ETag digests, `If-None-Match` matching, `Cache-Control` header values, 304 vs 200 decisions). It does not return framework response objects — adapters wire `HttpCacheOutcome` into your stack.
+
+```python
+from inhouse import (
+    HttpCacheOutcome,
+    cache_control_header,
+    etag_matches,
+    http_cache_headers,
+    http_cache_outcome,
+    make_weak_etag,
+)
+
+tag = make_weak_etag({"id": 1})                    # W/"<sha256>"
+etag_matches('W/"abc", W/"other"', 'W/"abc"')     # True
+cache_control_header(30.5, visibility="public")    # "public, max-age=31"
+
+outcome: HttpCacheOutcome = http_cache_outcome(
+    body,
+    if_none_match=client_if_none_match,
+    remaining_ttl=42.0,
+    stored_etag=tag,
+    http_cache=True,
+    cache_visibility="private",
+    use_etag=True,
+)
+# outcome.status_code → 200 or 304
+# outcome.headers     → {"Cache-Control": ..., "ETag": ...}
+# outcome.body        → body on 200, None on 304
+```
+
+Use with `MemoryStore.set(..., etag=...)`, `@inhouse_cache(etag=True)`, or manual `make_weak_etag` at write time. Pair with `store.remaining_ttl()` / `store.entry_meta()` when assembling headers on cache hits.
 
 Global default store helpers:
 
@@ -217,69 +282,81 @@ async def get_item(item_id: int) -> dict[str, int]:
 | `sliding` | `bool` | `False` | Touch-on-read TTL extension (same as `@inhouse_cache`) |
 | `http_cache` | `bool` | `False` | Emit `Cache-Control` with `max-age` from remaining in-process TTL |
 | `cache_visibility` | `"private" \| "public"` | `"private"` | Cache-Control visibility. Use `"public"` only for CDN/browser-shared assets |
-| `etag` | `bool` | `False` | Generate stable ETag and handle `If-None-Match` / `304 Not Modified` |
+| `etag` | `bool` | `False` | Generate stable ETag, handle `If-None-Match` / `304 Not Modified` via core `http_cache_outcome`, return Starlette responses |
 
 Custom `key_builder` functions replace the FastAPI-aware default. To keep Request/Response exclusion, delegate to `make_fastapi_cache_key` or pass your own `exclude_types`.
 
-When `http_cache=False` and `etag=False`, behavior is identical to v0.1.x (returns plain Python objects, no HTTP headers).
+When `http_cache=False` and `etag=False`, behavior is identical to v0.1.x (returns plain Python objects, no HTTP headers). With only `etag=True` on `@inhouse_cache` (no FastAPI), values are cached with ETag metadata but no HTTP responses are emitted.
 
 FastAPI-injected `request` is used only to read `If-None-Match`; it is stripped before your route handler runs and excluded from cache keys via `make_fastapi_cache_key`.
 
-### HTTP caching (FastAPI)
+### HTTP caching
 
-v0.1.x optimized the **server** (in-process TTL, stampede guard, LRU). v0.2.0 adds an optional **HTTP layer** so repeat clients may never hit your app at all when freshness allows.
+v0.1.x optimized the **server** (in-process TTL, stampede guard, LRU). v0.2.0 added HTTP caching via `@fastapi_cache`; v0.2.1 moves the semantics into core so any framework can use them. The FastAPI extra remains a thin adapter that reads `Request` headers and returns Starlette `Response` objects.
 
 **Three complementary layers:**
 
 | Layer | Mechanism | What it saves |
 |---|---|---|
-| 1. In-process cache | `@fastapi_cache` / `MemoryStore` | Server compute on repeat hits |
+| 1. In-process cache | `@inhouse_cache` / `@fastapi_cache` / `MemoryStore` | Server compute on repeat hits |
 | 2. Time-based HTTP cache | `http_cache=True` → `Cache-Control: max-age=N` | The round trip entirely while fresh |
 | 3. Conditional HTTP cache | `etag=True` → `If-None-Match` / `304` | The response payload when the round trip happens anyway |
 
 **HTTP Cache-Control (`http_cache=True`)**
 
-Offloads execution load entirely. If a client browser or a CDN (like Cloudflare) sees a valid `Cache-Control: public, max-age=30` header, they won't even send the request to your FastAPI server — saving bandwidth and compute.
+Offloads execution load entirely. If a client browser or a CDN (like Cloudflare) sees a valid `Cache-Control: public, max-age=30` header, they won't even send the request to your server — saving bandwidth and compute.
 
 - `max-age` is derived from `store.remaining_ttl(key)` on cache hits, so HTTP freshness tracks in-process TTL (including sliding extensions)
 - Defaults to `Cache-Control: private, max-age=N` — safe for user-specific responses
 - Opt in to `cache_visibility="public"` for CDN-shared public assets
+- Core helper: `cache_control_header()` / `http_cache_headers()`
 
 **ETag / 304 Not Modified (`etag=True`)**
 
 When a client already has the current version, inhouse returns `304 Not Modified` with an empty body instead of re-serializing and re-transmitting the full response — a huge bandwidth win on repeat requests.
 
-- Stable weak ETag (`W/"<sha256>"`) computed at cache-write time via canonical JSON digest
+- Stable weak ETag (`W/"<sha256>"`) computed at cache-write time via canonical JSON digest (`make_weak_etag`)
+- `@inhouse_cache(etag=True)` stores the tag; `@fastapi_cache(etag=True)` also handles conditional requests automatically
 - `If-None-Match` handled on cache hits and misses (recompute + matching ETag still skips body transfer)
 - Pairs naturally with Cache-Control: the browser/CDN may skip the request entirely; if a conditional request arrives after expiry, 304 skips the payload
+- Core helper: `etag_matches()` / `http_cache_outcome()`
 
 ```mermaid
 sequenceDiagram
     participant Client as Browser_or_CDN
-    participant FastAPI as fastapi_cache
+    participant Adapter as fastapi_cache_or_your_framework
+    participant HttpCache as http_cache_outcome
     participant Store as MemoryStore
 
-    Client->>FastAPI: GET with optional If-None-Match
-    FastAPI->>Store: get(key)
+    Client->>Adapter: GET with optional If-None-Match
+    Adapter->>Store: get(key)
     alt cache HIT
-        Store-->>FastAPI: value + remaining_ttl
+        Store-->>Adapter: value + entry_meta
+        Adapter->>HttpCache: body, if_none_match, remaining_ttl, stored_etag
         alt ETag matches
-            FastAPI-->>Client: 304 Not Modified empty body
+            HttpCache-->>Adapter: 304 + headers
+            Adapter-->>Client: 304 Not Modified empty body
         else full response
-            FastAPI-->>Client: 200 + Cache-Control + ETag + body
+            HttpCache-->>Adapter: 200 + headers + body
+            Adapter-->>Client: 200 + Cache-Control + ETag + body
         end
     else cache MISS
-        FastAPI->>FastAPI: run handler via singleflight
-        FastAPI->>Store: set(key, value, etag)
+        Adapter->>Adapter: run handler via singleflight
+        Adapter->>Store: set(key, value, etag)
+        Adapter->>HttpCache: fresh body + if_none_match
         alt ETag matches If-None-Match
-            FastAPI-->>Client: 304 Not Modified empty body
+            HttpCache-->>Adapter: 304 + headers
+            Adapter-->>Client: 304 Not Modified empty body
         else
-            FastAPI-->>Client: 200 + Cache-Control + ETag + body
+            HttpCache-->>Adapter: 200 + headers + body
+            Adapter-->>Client: 200 + Cache-Control + ETag + body
         end
     end
 ```
 
-**Return types:** HTTP caching modes return Starlette `JSONResponse` or `304 Response`. Best suited to JSON-serializable dict/list/Pydantic returns. Routes returning custom `Response` subclasses should omit `http_cache` / `etag`.
+**FastAPI return types:** `http_cache` / `etag` modes return Starlette `JSONResponse` or `304 Response`. Best suited to JSON-serializable dict/list/Pydantic returns. Routes returning custom `Response` subclasses should omit `http_cache` / `etag`.
+
+**Other frameworks:** use core `http_cache_outcome` with your own request header reads and response types — same semantics, no FastAPI import required.
 
 ### Lifespan / background cleanup *(optional — requires `inhouse-cache[fastapi]`)*
 
@@ -379,7 +456,7 @@ inhouse is **per-process** memory. If you run `uvicorn main:app --workers 4`, ea
 flowchart TB
     subgraph fastapi_layer [Optional FastAPI Integration - inhouse.fastapi]
         FDecorator["fastapi/decorator.py: @fastapi_cache"]
-        HttpCache["Cache-Control + ETag/304 via _respond"]
+        FAdapter["Request/Response adapter"]
         ReqStrip["Strip Request before handler"]
         FLifespan["fastapi/lifespan.py: create_lifespan"]
         FKeys["fastapi/keys.py: excludes Request/Response from keys"]
@@ -388,6 +465,7 @@ flowchart TB
     subgraph core [Zero-Dependency Core]
         Entry["entry.py: CacheEntry ttl_seconds sliding etag"]
         KeyBuilder["keys.py: make_cache_key + make_weak_etag"]
+        HttpCache["http_cache.py: etag_matches http_cache_outcome"]
         Store["store.py: MemoryStore entry_meta remaining_ttl"]
         Singleflight["singleflight.py"]
         Sweeper["sweeper.py: ExpirySweeper"]
@@ -395,8 +473,10 @@ flowchart TB
 
     FDecorator --> FKeys
     FDecorator --> ReqStrip
-    FDecorator --> HttpCache
+    FDecorator --> FAdapter
+    FAdapter --> HttpCache
     FKeys --> KeyBuilder
+    HttpCache --> KeyBuilder
     HttpCache -->|"entry_meta: max-age + etag"| Store
     FDecorator --> Store
     FDecorator --> Singleflight
@@ -411,7 +491,18 @@ flowchart TB
 The core package has no runtime dependencies. Import from `inhouse` directly:
 
 ```python
-from inhouse import MemoryStore, configure_default_store, inhouse_cache, make_cache_key
+from inhouse import (
+    HttpCacheOutcome,
+    MemoryStore,
+    cache_control_header,
+    configure_default_store,
+    etag_matches,
+    http_cache_headers,
+    http_cache_outcome,
+    inhouse_cache,
+    make_cache_key,
+    make_weak_etag,
+)
 ```
 
 See [Configuration reference](#configuration-reference) for full decorator and store options.
