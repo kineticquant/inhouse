@@ -2,7 +2,7 @@
 
 **Zero-dependency, in-process TTL cache for Python.** One decorator, stampede-safe, LRU-bounded. For when Redis is a meeting you don't want to have, or when you need to avoid yet another deployment. Designed to be simple and effective without bloat or complexity for developers.
 
-**Keep hot data cheap to serve** — v0.2.x adds an optional HTTP layer (memory → `Cache-Control` / ETag) with sensible defaults and no breaking changes.
+**Keep hot data cheap to serve** — v0.2.x adds an optional HTTP layer (memory → `Cache-Control` / ETag). v0.3.0 adds vertical caching patterns for SQLite, RAG, and file-backed prompts.
 
 Designed for easy use with FastAPI applications. Although FastAPI integration is absolutely optional.
 
@@ -123,6 +123,11 @@ async def get_catalog_item(item_id: int) -> dict[str, int]:
 - **`remaining_ttl()` (v0.2.0)** — introspect seconds-until-expiry for a cached key
 - **HTTP cache primitives (v0.2.1)** — framework-agnostic helpers in `inhouse.http_cache`: weak ETag generation (`make_weak_etag`), `etag_matches`, `cache_control_header`, `http_cache_headers`, and `http_cache_outcome` (304 vs 200 decision + header dict)
 - **`@inhouse_cache(etag=True)` (v0.2.1)** — store a stable weak ETag alongside cached values at write time (no HTTP response objects; wire headers yourself or use a framework extra)
+- **Recursive key freezing (v0.3.0)** — stable cache keys for sets, nested mappings, dataclasses, and Pydantic-like models without JSON-serializing live objects
+- **`cache_clear()` (v0.3.0)** — invalidate all cached entries for one decorated function
+- **`disable_all()` / `INHOUSE_CACHE_DISABLE` (v0.3.0)** — global dev bypass for prompt engineering and debugging
+- **`watch_files` (v0.3.0)** — lazy `mtime` checks invalidate cached file-backed content when prompts change on disk
+- **Vertical packages (v0.3.0)** — `inhouse.sqlite`, `inhouse.rag`, `inhouse.files` (always installed, opt-in import)
 
 **Optional FastAPI extra** (`pip install inhouse-cache[fastapi]`)
 
@@ -130,8 +135,21 @@ async def get_catalog_item(item_id: int) -> dict[str, int]:
 - **Automatic HTTP wiring (v0.2.0, core-backed v0.2.1)** — `http_cache=True` and/or `etag=True` read `If-None-Match` from the injected `Request` and return native Starlette `JSONResponse` / `304 Response` using core `http_cache_outcome`
 - Background expiry sweeper via FastAPI lifespan helpers
 - Clean lifespan shutdown - background sweeper cancels without noisy tracebacks
+- **Isolated default store (v0.3.0)** — `@fastapi_cache` uses its own `MemoryStore` by default so HTTP traffic does not evict core application cache entries
 
-## Configuration reference
+### Vertical packages (v0.3.0)
+
+Ship in the default wheel — no pip extra required. Import only what you need:
+
+| Package | Import | Purpose |
+|---|---|---|
+| `inhouse.sqlite` | `from inhouse.sqlite import query_store, safe_copy` | SQLite query result caching with `copy_on_read` + `sqlite3.Row` fallback |
+| `inhouse.rag` | `from inhouse.rag import rag_cache` | RAG prompt compilation preset (`ttl_seconds=600`) |
+| `inhouse.files` | `from inhouse.files import file_cache` | Markdown/txt prompt caching with `watch_files` + long TTL |
+
+See `examples/sqlite/`, `examples/rag/`, and `examples/files/` for recipes.
+
+**Breaking change (v0.3.0):** cache keys for `set`, `list` vs `tuple`, and dataclass/Pydantic-like inputs may differ from v0.2.x. Expect cache misses after upgrade, not corruption.
 
 ### `MemoryStore`
 
@@ -145,7 +163,8 @@ store = MemoryStore(max_size=1024, default_ttl=60, sliding=False)
 |---|---|---|---|
 | `max_size` | `int` | `1024` | Maximum number of entries before LRU eviction |
 | `default_ttl` | `float \| None` | `None` | Default TTL in seconds for `store.set()` and decorators that omit `ttl_seconds` |
-| `copy_on_read` | `bool` | `False` | When `True`, `get()` returns `copy.deepcopy()` of cached values so callers cannot mutate the store |
+| `copy_on_read` | `bool` | `False` | When `True`, `get()` returns a copy of cached values so callers cannot mutate the store |
+| `copy_fn` | `Callable[[Any], Any] \| None` | `None` | Custom copy function when `copy_on_read=True` (default: `copy.deepcopy`) |
 | `sliding` | `bool` | `False` | Store-wide default for touch-on-read TTL extension on `set()` |
 | `sliding` (property) | `bool` | — | Read-only; current store-wide sliding default |
 | `default_ttl` (property) | `float \| None` | — | Mutable at runtime; affects **future** writes only |
@@ -156,11 +175,12 @@ Store methods:
 | Method | Description |
 |---|---|
 | `get(key, *, default=MISS)` | Return a cached value, or `default` on miss/expiry. Extends expiry on read when entry is sliding. Deep-copies when `copy_on_read=True` |
-| `set(key, value, ttl_seconds=None, *, sliding=None, etag=None)` | Write a value; uses `default_ttl` when `ttl_seconds` is omitted. `sliding=None` inherits store default |
+| `set(key, value, ttl_seconds=None, *, sliding=None, etag=None, watch_mtimes=None)` | Write a value; uses `default_ttl` when `ttl_seconds` is omitted. `sliding=None` inherits store default |
 | `remaining_ttl(key)` | Seconds until expiry for a live entry, or `None` on miss/expired |
 | `entry_meta(key)` | `(remaining_ttl, etag)` tuple for a live entry, or `None` — single lock hop for HTTP header assembly |
 | `get_etag(key)` | Stored ETag for a live entry, or `None` |
 | `delete(key)` | Remove one entry |
+| `delete_prefix(prefix)` | Remove all keys starting with `prefix` |
 | `clear()` | Remove all entries |
 | `purge_expired()` | Proactively delete expired entries |
 | `keys()` | List current cache keys |
@@ -181,6 +201,7 @@ store = MemoryStore(default_ttl=60)
     exclude_types=(object,),     # optional — types omitted from key material
     sliding=False,           # optional — touch-on-read TTL extension
     etag=False,              # optional — store weak ETag metadata at write time
+    watch_files=False,       # optional — invalidate on watched file mtime changes
 )
 async def load_user(user_id: int) -> dict[str, int]:
     return {"user_id": user_id}
@@ -194,6 +215,18 @@ async def load_user(user_id: int) -> dict[str, int]:
 | `exclude_types` | `tuple[type, ...]` | `()` | Argument types excluded from key material (e.g. request objects) |
 | `sliding` | `bool` | `False` | When `True`, each successful read extends expiry by the entry's stored TTL duration |
 | `etag` | `bool` | `False` | When `True`, store a weak ETag (`W/"<sha256>"`) at write time via `make_weak_etag`. Retrieve with `store.get_etag(key)` or `store.entry_meta(key)` |
+| `watch_files` | `bool \| list[str]` | `False` | `True` auto-discovers file paths in arguments; `["*.md"]` filters by glob; explicit paths are always watched |
+
+Decorated functions expose `cache_clear()` to remove all cached entries for that function.
+
+Global cache bypass:
+
+```python
+from inhouse import disable_all, enable_all, caching_disabled
+
+disable_all()              # or set INHOUSE_CACHE_DISABLE=1
+enable_all()
+```
 
 `inhouse_cache` is an alias for `cache`.
 
@@ -260,7 +293,7 @@ async def load_active_session(session_id: str) -> dict[str, str]:
 
 ### `@fastapi_cache` *(optional — requires `inhouse-cache[fastapi]`)*
 
-FastAPI-friendly wrapper around `inhouse_cache`. Automatically excludes Starlette `Request` and `Response` objects from cache keys.
+FastAPI-friendly wrapper around `inhouse_cache`. Automatically excludes Starlette `Request` and `Response` objects from cache keys. Uses an isolated default `MemoryStore` (see `get_fastapi_default_store()`).
 
 ```python
 from inhouse.fastapi import create_lifespan, fastapi_cache
@@ -495,8 +528,12 @@ from inhouse import (
     HttpCacheOutcome,
     MemoryStore,
     cache_control_header,
+    caching_disabled,
     configure_default_store,
+    disable_all,
+    enable_all,
     etag_matches,
+    freeze_for_key,
     http_cache_headers,
     http_cache_outcome,
     inhouse_cache,
