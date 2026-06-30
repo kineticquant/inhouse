@@ -1,6 +1,14 @@
 """inhouse — zero-dependency, in-process TTL cache with LRU eviction."""
 
-from inhouse.decorator import cache, configure_default_store, get_default_store, inhouse_cache
+from inhouse.decorator import (
+    cache,
+    caching_disabled,
+    configure_default_store,
+    disable_all,
+    enable_all,
+    get_default_store,
+    inhouse_cache,
+)
 from inhouse.entry import CacheEntry
 from inhouse.http_cache import (
     HttpCacheOutcome,
@@ -10,7 +18,7 @@ from inhouse.http_cache import (
     http_cache_headers,
     http_cache_outcome,
 )
-from inhouse.keys import make_cache_key, make_weak_etag
+from inhouse.keys import freeze_for_key, make_cache_key, make_weak_etag
 from inhouse.store import MemoryStore
 from inhouse.sweeper import ExpirySweeper
 
@@ -21,9 +29,13 @@ __all__ = [
     "MemoryStore",
     "cache",
     "cache_control_header",
+    "caching_disabled",
     "configure_default_store",
+    "disable_all",
+    "enable_all",
     "etag_for_value",
     "etag_matches",
+    "freeze_for_key",
     "get_default_store",
     "http_cache_headers",
     "http_cache_outcome",
@@ -31,4 +43,4 @@ __all__ = [
     "make_cache_key",
     "make_weak_etag",
 ]
-__version__ = "0.2.1"
+__version__ = "0.3.0"
