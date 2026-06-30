@@ -11,3 +11,4 @@ class CacheEntry:
     ttl_seconds: float
     sliding: bool = False
     etag: str | None = None
+    watch_mtimes: dict[str, float] | None = None

@@ -107,6 +107,23 @@ def test_copy_on_read_prevents_mutation() -> None:
     assert cache.get("key") == {"count": 1}
 
 
+def test_copy_fn_is_used_when_configured() -> None:
+    cache = MemoryStore(copy_on_read=True, copy_fn=lambda value: {"copied": value})
+    cache.set("key", 1, 60)
+    assert cache.get("key") == {"copied": 1}
+
+
+def test_delete_prefix_removes_matching_keys() -> None:
+    cache = MemoryStore()
+    cache.set("alpha.one", 1, 60)
+    cache.set("alpha.two", 2, 60)
+    cache.set("beta.one", 3, 60)
+    removed = cache.delete_prefix("alpha.")
+    assert removed == 2
+    assert cache.get("beta.one") == 3
+    assert cache.get("alpha.one") is MISS
+
+
 def test_sliding_extends_expiry_on_read() -> None:
     cache = MemoryStore()
     base = 1000.0

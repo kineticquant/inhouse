@@ -4,6 +4,7 @@ import copy
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
 
 from inhouse.entry import CacheEntry
@@ -19,12 +20,21 @@ MISS = _CacheMiss()
 class MemoryStore:
     """Thread-safe in-memory cache with TTL expiry and LRU eviction."""
 
-    def __init__(self, max_size: int = 1024, *, default_ttl: float | None = None, copy_on_read: bool = False, sliding: bool = False) -> None:  # noqa: E501
+    def __init__(
+        self,
+        max_size: int = 1024,
+        *,
+        default_ttl: float | None = None,
+        copy_on_read: bool = False,
+        copy_fn: Callable[[Any], Any] | None = None,
+        sliding: bool = False,
+    ) -> None:
         if max_size < 1:
             raise ValueError("max_size must be at least 1")
         self._max_size = max_size
         self._default_ttl = default_ttl
         self._copy_on_read = copy_on_read
+        self._copy_fn = copy_fn
         self._sliding = sliding
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = threading.RLock()
@@ -57,6 +67,11 @@ class MemoryStore:
         with self._lock:
             return len(self._entries)
 
+    def _copy_value(self, value: Any) -> Any:
+        if self._copy_fn is not None:
+            return self._copy_fn(value)
+        return copy.deepcopy(value)
+
     def get(self, key: str, *, default: Any = MISS) -> Any:
         with self._lock:
             entry = self._entries.get(key)
@@ -71,17 +86,43 @@ class MemoryStore:
             self._entries.move_to_end(key)
             value = entry.value
             if self._copy_on_read:
-                return copy.deepcopy(value)
+                return self._copy_value(value)
             return value
 
-    def set(self, key: str, value: Any, ttl_seconds: float | None = None, *, sliding: bool | None = None, etag: str | None = None) -> None:  # noqa: E501
+    def get_entry(self, key: str) -> CacheEntry | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if time.monotonic() >= entry.expires_at:
+                del self._entries[key]
+                return None
+            return entry
+
+    def set(
+        self,
+        key: str,
+        value: Any,
+        ttl_seconds: float | None = None,
+        *,
+        sliding: bool | None = None,
+        etag: str | None = None,
+        watch_mtimes: dict[str, float] | None = None,
+    ) -> None:
         with self._lock:
             ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl
             if ttl is None or ttl <= 0:
                 raise ValueError("ttl_seconds must be positive")
             use_sliding = self._sliding if sliding is None else sliding
             expires_at = time.monotonic() + ttl
-            self._entries[key] = CacheEntry(expires_at=expires_at, value=value, ttl_seconds=ttl, sliding=use_sliding, etag=etag)  # noqa: E501
+            self._entries[key] = CacheEntry(
+                expires_at=expires_at,
+                value=value,
+                ttl_seconds=ttl,
+                sliding=use_sliding,
+                etag=etag,
+                watch_mtimes=watch_mtimes,
+            )
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_size:
                 self._entries.popitem(last=False)
@@ -111,6 +152,13 @@ class MemoryStore:
                 del self._entries[key]
                 return True
             return False
+
+    def delete_prefix(self, prefix: str) -> int:
+        with self._lock:
+            keys = [key for key in self._entries if key.startswith(prefix)]
+            for key in keys:
+                del self._entries[key]
+            return len(keys)
 
     def clear(self) -> None:
         with self._lock:
