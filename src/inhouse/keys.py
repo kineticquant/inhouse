@@ -1,22 +1,74 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 
-def _normalize_value(value: Any) -> Any:
+def freeze_for_key(value: Any) -> Any:
+    # recursive freeze for stable cache keys
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return tuple(
+            (str(k), freeze_for_key(v))
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+        )
+    if isinstance(value, list):
+        return ("__list__", tuple(freeze_for_key(item) for item in value))
+    if isinstance(value, tuple):
+        return ("__tuple__", tuple(freeze_for_key(item) for item in value))
+    if isinstance(value, set | frozenset):
+        return frozenset(freeze_for_key(item) for item in value)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        qualname = f"{type(value).__module__}.{type(value).__qualname__}"
+        fields = dataclasses.fields(value)
+        return (
+            "dataclass",
+            qualname,
+            tuple(freeze_for_key(getattr(value, field.name)) for field in fields),
+        )
+    # pydantic duck-type without importing pydantic
+    model_fields = getattr(type(value), "model_fields", None)
+    if model_fields is not None:
+        qualname = f"{type(value).__module__}.{type(value).__qualname__}"
+        dumped = value.model_dump() if hasattr(value, "model_dump") else dict(value)
+        return ("pydantic", qualname, freeze_for_key(dumped))
+    legacy_fields = getattr(type(value), "__fields__", None)
+    if legacy_fields is not None:
+        qualname = f"{type(value).__module__}.{type(value).__qualname__}"
+        dumped = value.dict() if hasattr(value, "dict") else dict(value)
+        return ("pydantic", qualname, freeze_for_key(dumped))
+    return f"{type(value).__module__}.{type(value).__qualname__}:{value!s}"
+
+
+def _to_json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, tuple):
+        if value and value[0] in ("dataclass", "pydantic", "__list__", "__tuple__"):
+            return [_to_json_safe(item) for item in value]
+        return ["__tuple__", *[_to_json_safe(item) for item in value]]
+    if isinstance(value, frozenset):
+        parts = sorted(
+            (_to_json_safe(item) for item in value),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+        return ["__frozenset__", *parts]
+    if isinstance(value, list):
+        return [_to_json_safe(item) for item in value]
     if isinstance(value, Mapping):
         return {
-            str(k): _normalize_value(v)
+            str(k): _to_json_safe(v)
             for k, v in sorted(value.items(), key=lambda item: str(item[0]))
         }
-    if isinstance(value, list | tuple):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, str | int | float | bool) or value is None:
-        return value
-    return f"{type(value).__module__}.{type(value).__qualname__}:{value!s}"
+    return value
+
+
+def _normalize_value(value: Any) -> Any:
+    return _to_json_safe(freeze_for_key(value))
 
 
 def _collect_key_material(

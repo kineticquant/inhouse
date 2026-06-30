@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 from inhouse.keys import make_cache_key
 
 
@@ -91,4 +93,51 @@ def test_same_type_and_str_produce_same_key() -> None:
 
     key_a = make_cache_key(sample_func, (Widget("x"),), {})
     key_b = make_cache_key(sample_func, (Widget("x"),), {})
+    assert key_a == key_b
+
+
+def test_set_argument_order_is_irrelevant() -> None:
+    key_a = make_cache_key(sample_func, ({1, 2, 3},), {})
+    key_b = make_cache_key(sample_func, ({3, 2, 1},), {})
+    assert key_a == key_b
+
+
+def test_list_and_tuple_produce_different_keys() -> None:
+    key_a = make_cache_key(sample_func, ([1, 2],), {})
+    key_b = make_cache_key(sample_func, ((1, 2),), {})
+    assert key_a != key_b
+
+
+@dataclasses.dataclass
+class SampleRecord:
+    user_id: int
+    label: str
+
+
+def test_dataclass_arguments_are_stable() -> None:
+    key_a = make_cache_key(sample_func, (SampleRecord(1, "a"),), {})
+    key_b = make_cache_key(sample_func, (SampleRecord(1, "a"),), {})
+    assert key_a == key_b
+
+
+class PydanticLike:
+    model_fields = {"name": object(), "count": object()}
+
+    def __init__(self, name: str, count: int) -> None:
+        self.name = name
+        self.count = count
+
+    def model_dump(self) -> dict[str, object]:
+        return {"name": self.name, "count": self.count}
+
+
+def test_pydantic_like_arguments_are_stable() -> None:
+    key_a = make_cache_key(sample_func, (PydanticLike("x", 1),), {})
+    key_b = make_cache_key(sample_func, (PydanticLike("x", 1),), {})
+    assert key_a == key_b
+
+
+def test_nested_mapping_freezing_is_stable() -> None:
+    key_a = make_cache_key(sample_func, (), {"filters": {"tags": {"a", "b"}, "ids": [1, 2]}})
+    key_b = make_cache_key(sample_func, (), {"filters": {"ids": [1, 2], "tags": {"b", "a"}}})
     assert key_a == key_b
