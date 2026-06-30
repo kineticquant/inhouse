@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from inhouse.decorator import _resolve_ttl, get_default_store, inhouse_cache
+from inhouse.decorator import _resolve_ttl, inhouse_cache
 from inhouse.fastapi.keys import make_fastapi_cache_key
 from inhouse.http_cache import HttpCacheOutcome, etag_for_value, http_cache_outcome
 from inhouse.singleflight import AsyncSingleflight, SyncSingleflight
@@ -17,8 +17,18 @@ from inhouse.store import MISS, MemoryStore
 
 TtlSource = float | Callable[[], float] | None
 
+_FASTAPI_DEFAULT_STORE = MemoryStore()
 _ASYNC_SINGLEFLIGHT = AsyncSingleflight()
 _SYNC_SINGLEFLIGHT = SyncSingleflight()
+
+
+def get_fastapi_default_store() -> MemoryStore:
+    return _FASTAPI_DEFAULT_STORE
+
+
+def configure_fastapi_default_store(store: MemoryStore) -> None:
+    global _FASTAPI_DEFAULT_STORE
+    _FASTAPI_DEFAULT_STORE = store
 
 
 # add request: Request to wrapper signature so fastapi injects it for if-none-match reads
@@ -53,7 +63,7 @@ def _http_cache(func: Callable[..., Any], *, async_: bool, ttl_seconds: TtlSourc
     singleflight = _ASYNC_SINGLEFLIGHT if async_ else _SYNC_SINGLEFLIGHT
 
     def ctx(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[MemoryStore, str, Callable[[Any], Response]]:  # noqa: E501
-        target_store = store or get_default_store()
+        target_store = store or _FASTAPI_DEFAULT_STORE
         cache_key = key_builder(func, args, kwargs, exclude_types=())
         request = kwargs.get("request")
         if_none_match = request.headers.get("if-none-match") if request else None
@@ -101,7 +111,8 @@ def _http_cache(func: Callable[..., Any], *, async_: bool, ttl_seconds: TtlSourc
 
 
 def fastapi_cache(ttl_seconds: TtlSource = None, *, store: MemoryStore | None = None, key_builder: Callable[..., str] | None = None, sliding: bool = False, http_cache: bool = False, cache_visibility: Literal["private", "public"] = "private", etag: bool = False) -> Callable[[Any], Any]:  # noqa: E501
+    resolved_store = store or _FASTAPI_DEFAULT_STORE
     if not http_cache and not etag:
-        return inhouse_cache(ttl_seconds, store=store, key_builder=key_builder or make_fastapi_cache_key, sliding=sliding)  # noqa: E501
+        return inhouse_cache(ttl_seconds, store=resolved_store, key_builder=key_builder or make_fastapi_cache_key, sliding=sliding)  # noqa: E501
     kb = key_builder or make_fastapi_cache_key
-    return lambda func: _http_cache(func, async_=inspect.iscoroutinefunction(func), ttl_seconds=ttl_seconds, store=store, key_builder=kb, sliding=sliding, http_cache=http_cache, cache_visibility=cache_visibility, etag=etag)  # noqa: E501
+    return lambda func: _http_cache(func, async_=inspect.iscoroutinefunction(func), ttl_seconds=ttl_seconds, store=resolved_store, key_builder=kb, sliding=sliding, http_cache=http_cache, cache_visibility=cache_visibility, etag=etag)  # noqa: E501
